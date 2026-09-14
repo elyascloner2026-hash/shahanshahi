@@ -1,12 +1,11 @@
 """
 Attack system.
 Players can only attack by replying to another player's message
-in a group and sending /fight.
+in a group and sending: حمله
 """
 import time
 
 from aiogram import Router, F
-from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 
 from config import FIGHT_COOLDOWN
@@ -199,23 +198,23 @@ async def do_fight(
     await answer_func(text)
 
 
-@router.message(Command("fight"))
-async def cmd_fight(message: Message):
+# ============================================================
+# دستور «حمله» — فقط با Reply
+# ============================================================
 
-    # حمله فقط داخل گروه
+@router.message(F.text.regexp(r"^حمله$"))
+async def cmd_attack(message: Message):
+
     if message.chat.type not in ("group", "supergroup"):
         await message.answer(
-            "⚔️ حمله فقط داخل گروه انجام می‌شود.\n\n"
-            "روی پیام بازیکنی که می‌خواهی به او حمله کنی "
-            "Reply بزن و سپس /fight را بفرست."
+            "⚔️ حمله فقط داخل گروه انجام می‌شود."
         )
         return
 
-    # فقط با Reply
     if not message.reply_to_message:
         await message.answer(
-            "⚔️ برای حمله باید روی پیام بازیکن موردنظر "
-            "Reply بزنی و سپس /fight را بفرستی."
+            "⚔️ برای حمله، روی پیام بازیکن موردنظر Reply کن "
+            "و فقط بنویس: حمله"
         )
         return
 
@@ -223,8 +222,8 @@ async def cmd_fight(message: Message):
         await message.answer("❌ بازیکن موردنظر پیدا نشد.")
         return
 
-    defender_id = message.reply_to_message.from_user.id
     attacker_id = message.from_user.id
+    defender_id = message.reply_to_message.from_user.id
     chat_id = message.chat.id
 
     await db.ensure_group(chat_id, message.chat.title)
@@ -242,9 +241,11 @@ async def cmd_fight(message: Message):
 async def menu_fight(callback: CallbackQuery):
     await callback.message.edit_text(
         "⚔️ <b>حمله</b>\n\n"
-        "برای حمله باید داخل گروه روی پیام بازیکن موردنظر "
-        "Reply بزنی و سپس دستور /fight را بفرستی.\n\n"
-        "❌ حمله با یوزرنیم امکان‌پذیر نیست.",
+        "برای حمله داخل گروه:\n\n"
+        "1️⃣ روی پیام بازیکن موردنظر Reply کن\n"
+        "2️⃣ فقط بنویس: <code>حمله</code>\n\n"
+        "❌ حمله با یوزرنیم امکان‌پذیر نیست.\n"
+        "❌ دستور /fight هم لازم نیست.",
         reply_markup=back_kb(),
     )
 

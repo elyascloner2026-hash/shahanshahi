@@ -10,6 +10,24 @@ from utils.keyboards import back_kb
 router = Router(name="premium")
 
 
+@router.callback_query(F.data == "menu:gems")
+async def show_premium_menu(callback: CallbackQuery):
+    character = await db.get_character(callback.from_user.id)
+
+    if not character:
+        await callback.answer("ابتدا باید /start بزنید.", show_alert=True)
+        return
+
+    unlocked = await db.get_premium(callback.from_user.id)
+
+    await callback.message.edit_text(
+        premium_text(character, unlocked),
+        reply_markup=premium_kb(unlocked),
+    )
+
+    await callback.answer()
+
+
 def premium_kb(unlocked):
     b = InlineKeyboardBuilder()
     for code, item in PREMIUM.items():

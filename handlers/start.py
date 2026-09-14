@@ -38,9 +38,10 @@ WELCOME_NEW_CHARACTER = (
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, bot: Bot):
-    if message.chat.type != "private":
-        await message.answer("👑 برای شروع بازی به چت خصوصی من پیام بده.")
-        return
+    is_group = message.chat.type in ("group", "supergroup")
+
+    if is_group:
+        await db.ensure_group(message.chat.id, message.chat.title)
 
     await db.ensure_user(message.from_user.id, message.from_user.username)
 

@@ -50,7 +50,6 @@ def main_menu_private() -> InlineKeyboardMarkup:
     b.button(text="🏛 قلمرو من", callback_data="menu:territory")
     b.button(text="⚔️ فایت", callback_data="menu:fight")
     b.button(text="🪖 ارتش", callback_data="menu:army")
-    b.button(text="🃏 قهرمانان", callback_data="menu:heroes")
     b.button(text="💎 جم و قابلیت‌ها", callback_data="menu:gems")
     b.button(text="📜 مأموریت‌ها", callback_data="menu:quests")
     b.button(text="🛒 فروشگاه", callback_data="menu:shop")

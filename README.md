@@ -150,3 +150,11 @@ shahanshahi/
 - آسیب به Hero Event بر اساس Power شخصیت (به‌علاوه تصادفی‌بودن) در سمت سرور محاسبه می‌شود، نه عددی که کاربر تایپ می‌کند — تا از تقلب جلوگیری شود.
 - تمام مقادیر Coins هرگز منفی نمی‌شوند.
 - Cooldown مبارزه کاملاً سمت سرور (در دیتابیس) بررسی می‌شود.
+
+## Gem economy
+- New players start with **0 Gems**.
+- Gems are not awarded by Hero Events.
+- The admin/Shahanshah is the only initial Gem treasury holder.
+- Players buy Gem packages from the Shahanshah using Coins.
+- Gem-only premium unlocks remain available in the Gem menu.
+- Admin commands: `/addgems <amount>` adds Gems only to the admin treasury; `/gemstock` shows treasury balance.

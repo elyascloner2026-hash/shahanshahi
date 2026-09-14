@@ -12,10 +12,12 @@ from aiogram.types import Message, CallbackQuery
 from config import FIGHT_COOLDOWN
 from database import db
 from game.battles import resolve_fight, is_protected
+from game.army import army_strength, UNITS
 from game.levels import XP_REWARDS
 from handlers.profile import sync_level
 from utils.helpers import cooldown_remaining, format_cooldown, hero_bonus_for
 from utils.keyboards import challenge_kb, back_kb
+
 
 router = Router(name="fight")
 
@@ -67,19 +69,41 @@ async def do_fight(message_or_callback, attacker_id: int, defender_id: int, chat
 
     attacker_heroes = await db.get_heroes(attacker_id)
     defender_heroes = await db.get_heroes(defender_id)
+    attacker_army = await db.get_army(attacker_id)
+    defender_army = await db.get_army(defender_id)
+    a_army = army_strength(attacker_army)
+    d_army = army_strength(defender_army)
+
+    if a_army["total"] <= 0:
+        await answer_func("🪖 ارتشت خالی است! از بخش «ارتش» سرباز بخر.")
+        return
+    if d_army["total"] <= 0:
+        await answer_func("❌ حریف ارتش ندارد و فعلاً قابل مبارزه نیست.")
+        return
+
+    attacker_premium = await db.has_premium(attacker_id, "battle_mastery")
+    defender_premium = await db.has_premium(defender_id, "battle_mastery")
 
     outcome = resolve_fight(
         attacker_stats={
             "power": attacker["power"], "defense": attacker["defense"],
             "level": attacker["level"], "rank": attacker["rank"],
             "hero_bonus": hero_bonus_for(attacker_heroes),
+            "army_power": a_army["power"], "army_defense": a_army["defense"],
         },
         defender_stats={
             "power": defender["power"], "defense": defender["defense"],
             "level": defender["level"], "rank": defender["rank"],
             "hero_bonus": hero_bonus_for(defender_heroes),
+            "army_power": d_army["power"], "army_defense": d_army["defense"],
         },
     )
+
+    if attacker_premium:
+        outcome["attacker_score"] = round(outcome["attacker_score"] * 1.15, 1)
+    if defender_premium:
+        outcome["defender_score"] = round(outcome["defender_score"] * 1.15, 1)
+    outcome["attacker_wins"] = outcome["attacker_score"] >= outcome["defender_score"]
 
     winner_id = attacker_id if outcome["attacker_wins"] else defender_id
     loser_id = defender_id if outcome["attacker_wins"] else attacker_id
@@ -104,6 +128,10 @@ async def do_fight(message_or_callback, attacker_id: int, defender_id: int, chat
         losses=(attacker["losses"] + 1) if loser_id == attacker_id else (defender["losses"] + 1),
     )
     await db.set_last_fight(attacker_id, int(time.time()))
+    # A battle costs soldiers. Stronger armies still matter because their unit stats
+    # determine the score, while casualties make repeated fights less trivial.
+    await db.lose_army(attacker_id, 0.10 if winner_id == attacker_id else 0.18)
+    await db.lose_army(defender_id, 0.18 if winner_id == attacker_id else 0.10)
 
     battle_id = await db.record_battle(
         attacker_id, defender_id, winner_id, coins_reward, XP_REWARDS["fight_win"], chat_id
@@ -121,7 +149,9 @@ async def do_fight(message_or_callback, attacker_id: int, defender_id: int, chat
         f"🏆 Winner: {winner_name}\n"
         f"💀 Loser: {loser_name}\n\n"
         f"💰 +{coins_reward} Coins برای برنده\n"
-        f"✨ +{XP_REWARDS['fight_win']} XP برای برنده"
+        f"✨ +{XP_REWARDS['fight_win']} XP برای برنده\n\n"
+        f"🪖 ارتش: {a_army['total']} نفر در برابر {d_army['total']} نفر\n"
+        f"⚔️ قدرت نبرد: {outcome['attacker_score']} در برابر {outcome['defender_score']}"
     )
     await answer_func(text)
 

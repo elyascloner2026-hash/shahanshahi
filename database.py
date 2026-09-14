@@ -30,11 +30,14 @@ CREATE TABLE IF NOT EXISTS characters (
     level INTEGER NOT NULL DEFAULT 1,
     xp INTEGER NOT NULL DEFAULT 0,
     coins INTEGER NOT NULL DEFAULT 500,
+    gems INTEGER NOT NULL DEFAULT 0,
     power INTEGER NOT NULL DEFAULT 100,
     defense INTEGER NOT NULL DEFAULT 100,
     wins INTEGER NOT NULL DEFAULT 0,
     losses INTEGER NOT NULL DEFAULT 0,
     last_fight_at INTEGER NOT NULL DEFAULT 0,
+    heal_1_used_at INTEGER NOT NULL DEFAULT 0,
+    heal_2_used_at INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
 
@@ -65,6 +68,26 @@ CREATE TABLE IF NOT EXISTS inventory (
     user_id INTEGER NOT NULL REFERENCES users(user_id),
     item_id INTEGER NOT NULL REFERENCES items(id),
     quantity INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS army_units (
+    user_id INTEGER NOT NULL REFERENCES users(user_id),
+    unit_code TEXT NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 0,
+    max_quantity INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, unit_code)
+);
+
+CREATE TABLE IF NOT EXISTS gem_economy_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS premium_unlocks (
+    user_id INTEGER NOT NULL REFERENCES users(user_id),
+    code TEXT NOT NULL,
+    unlocked_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, code)
 );
 
 CREATE TABLE IF NOT EXISTS heroes (
@@ -197,6 +220,37 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA foreign_keys = ON;")
         await self._conn.executescript(SCHEMA)
+        # Safe migrations for existing SQLite databases.
+        for stmt in (
+            "ALTER TABLE characters ADD COLUMN heal_1_used_at INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE characters ADD COLUMN heal_2_used_at INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE characters ADD COLUMN gems INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                await self._conn.execute(stmt)
+            except aiosqlite.OperationalError:
+                pass
+        # One-time Gem economy migration: old builds may have granted starter Gems.
+        # Wipe player Gems once, then seed the admin treasury only.
+        from config import ADMIN_IDS
+        cur = await self._conn.execute("SELECT value FROM gem_economy_meta WHERE key = 'initialized'")
+        marker = await cur.fetchone()
+        if not marker:
+            if ADMIN_IDS:
+                placeholders = ",".join("?" for _ in ADMIN_IDS)
+                await self._conn.execute(
+                    f"UPDATE characters SET gems = 0 WHERE user_id NOT IN ({placeholders})",
+                    tuple(ADMIN_IDS),
+                )
+                await self._conn.execute(
+                    f"UPDATE characters SET gems = 1000000000 WHERE user_id IN ({placeholders})",
+                    tuple(ADMIN_IDS),
+                )
+            else:
+                await self._conn.execute("UPDATE characters SET gems = 0")
+            await self._conn.execute(
+                "INSERT INTO gem_economy_meta(key, value) VALUES('initialized', '1')"
+            )
         await self._conn.commit()
         await self._seed_defaults()
 
@@ -267,6 +321,19 @@ class Database:
             (user_id, name, gender, territory, city, int(time.time())),
         )
         await self._conn.commit()
+        # Admin is the only account that receives the initial Gem treasury.
+        from config import ADMIN_IDS
+        if user_id in ADMIN_IDS:
+            await self._conn.execute(
+                "UPDATE characters SET gems = 1000000000 WHERE user_id = ?", (user_id,)
+            )
+            await self._conn.commit()
+        # A new player starts with a small basic army.
+        await self._conn.executemany(
+            "INSERT OR IGNORE INTO army_units (user_id, unit_code, quantity, max_quantity) VALUES (?, ?, ?, ?)",
+            [(user_id, "archer_1", 10, 10), (user_id, "swordsman_1", 10, 10)],
+        )
+        await self._conn.commit()
 
     async def update_character(self, user_id: int, **fields):
         if not fields:
@@ -308,6 +375,117 @@ class Database:
         )
         await self._conn.commit()
 
+    async def add_gems(self, user_id: int, amount: int, reason: str = "unknown"):
+        await self._conn.execute(
+            "UPDATE characters SET gems = MAX(0, gems + ?) WHERE user_id = ?", (amount, user_id)
+        )
+        await self._conn.commit()
+
+    async def spend_gems(self, user_id: int, amount: int) -> bool:
+        cur = await self._conn.execute(
+            "UPDATE characters SET gems = gems - ? WHERE user_id = ? AND gems >= ?",
+            (amount, user_id, amount),
+        )
+        await self._conn.commit()
+        return cur.rowcount == 1
+
+    async def buy_gems_from_admin(self, buyer_id: int, admin_id: int, gems: int, coin_price: int) -> bool:
+        """Atomically move Coins from buyer to admin and Gems from admin to buyer."""
+        if buyer_id == admin_id or gems <= 0 or coin_price <= 0:
+            return False
+        cur = await self._conn.execute(
+            "UPDATE characters SET coins = coins - ? WHERE user_id = ? AND coins >= ?",
+            (coin_price, buyer_id, coin_price),
+        )
+        if cur.rowcount != 1:
+            await self._conn.rollback()
+            return False
+        cur = await self._conn.execute(
+            "UPDATE characters SET gems = gems - ? WHERE user_id = ? AND gems >= ?",
+            (gems, admin_id, gems),
+        )
+        if cur.rowcount != 1:
+            await self._conn.rollback()
+            return False
+        await self._conn.execute(
+            "UPDATE characters SET gems = gems + ? WHERE user_id = ?", (gems, buyer_id)
+        )
+        await self._conn.execute(
+            "UPDATE characters SET coins = coins + ? WHERE user_id = ?", (coin_price, admin_id)
+        )
+        await self._conn.execute(
+            "INSERT INTO transactions (user_id, amount, reason, created_at) VALUES (?, ?, ?, ?)",
+            (buyer_id, -coin_price, "gem_purchase", int(time.time())),
+        )
+        await self._conn.execute(
+            "INSERT INTO transactions (user_id, amount, reason, created_at) VALUES (?, ?, ?, ?)",
+            (admin_id, coin_price, "gem_sale", int(time.time())),
+        )
+        await self._conn.commit()
+        return True
+
+    async def transfer_gems(self, sender_id: int, receiver_id: int, amount: int) -> bool:
+        """Atomically transfer Gems between two existing characters."""
+        if sender_id == receiver_id or amount <= 0:
+            return False
+        cur = await self._conn.execute(
+            "UPDATE characters SET gems = gems - ? WHERE user_id = ? AND gems >= ?",
+            (amount, sender_id, amount),
+        )
+        if cur.rowcount != 1:
+            await self._conn.rollback()
+            return False
+        cur = await self._conn.execute(
+            "UPDATE characters SET gems = gems + ? WHERE user_id = ?",
+            (amount, receiver_id),
+        )
+        if cur.rowcount != 1:
+            await self._conn.rollback()
+            return False
+        now = int(time.time())
+        await self._conn.execute(
+            "INSERT INTO transactions (user_id, amount, reason, created_at) VALUES (?, ?, ?, ?)",
+            (sender_id, -amount, "gem_transfer_out", now),
+        )
+        await self._conn.execute(
+            "INSERT INTO transactions (user_id, amount, reason, created_at) VALUES (?, ?, ?, ?)",
+            (receiver_id, amount, "gem_transfer_in", now),
+        )
+        await self._conn.commit()
+        return True
+
+    async def has_premium(self, user_id: int, code: str) -> bool:
+        cur = await self._conn.execute(
+            "SELECT 1 FROM premium_unlocks WHERE user_id = ? AND code = ?", (user_id, code)
+        )
+        return await cur.fetchone() is not None
+
+    async def unlock_premium(self, user_id: int, code: str, price: int) -> bool:
+        cur = await self._conn.execute(
+            "SELECT 1 FROM premium_unlocks WHERE user_id = ? AND code = ?", (user_id, code)
+        )
+        if await cur.fetchone():
+            return False
+        cur = await self._conn.execute(
+            "UPDATE characters SET gems = gems - ? WHERE user_id = ? AND gems >= ?",
+            (price, user_id, price),
+        )
+        if cur.rowcount != 1:
+            await self._conn.rollback()
+            return False
+        await self._conn.execute(
+            "INSERT INTO premium_unlocks (user_id, code, unlocked_at) VALUES (?, ?, ?)",
+            (user_id, code, int(time.time())),
+        )
+        await self._conn.commit()
+        return True
+
+    async def get_premium(self, user_id: int):
+        cur = await self._conn.execute(
+            "SELECT code FROM premium_unlocks WHERE user_id = ? ORDER BY code", (user_id,)
+        )
+        return [r["code"] for r in await cur.fetchall()]
+
     # ---------- items / inventory ----------
 
     async def list_items(self):
@@ -342,6 +520,67 @@ class Database:
             (user_id,),
         )
         return await cur.fetchall()
+
+    # ---------- army ----------
+    async def get_army(self, user_id: int):
+        cur = await self._conn.execute(
+            "SELECT * FROM army_units WHERE user_id = ? AND quantity > 0 ORDER BY unit_code", (user_id,)
+        )
+        return await cur.fetchall()
+
+    async def get_all_army(self, user_id: int):
+        cur = await self._conn.execute(
+            "SELECT * FROM army_units WHERE user_id = ? ORDER BY unit_code", (user_id,)
+        )
+        return await cur.fetchall()
+
+    async def add_units(self, user_id: int, unit_code: str, amount: int):
+        await self._conn.execute(
+            "INSERT INTO army_units (user_id, unit_code, quantity, max_quantity) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(user_id, unit_code) DO UPDATE SET quantity = quantity + excluded.quantity, max_quantity = MAX(max_quantity, quantity + excluded.quantity)",
+            (user_id, unit_code, amount, amount),
+        )
+        await self._conn.commit()
+
+    async def set_units(self, user_id: int, unit_code: str, amount: int):
+        await self._conn.execute(
+            "INSERT INTO army_units (user_id, unit_code, quantity, max_quantity) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(user_id, unit_code) DO UPDATE SET quantity = MAX(0, excluded.quantity), max_quantity = MAX(max_quantity, excluded.quantity)",
+            (user_id, unit_code, max(0, amount), max(0, amount)),
+        )
+        await self._conn.commit()
+
+    async def lose_army(self, user_id: int, ratio: float):
+        rows = await self.get_all_army(user_id)
+        for row in rows:
+            qty = row["quantity"]
+            if qty <= 0:
+                continue
+            lost = max(1, int(round(qty * ratio)))
+            await self._conn.execute(
+                "UPDATE army_units SET quantity = MAX(0, quantity - ?) WHERE user_id = ? AND unit_code = ?",
+                (lost, user_id, row["unit_code"]),
+            )
+        await self._conn.commit()
+        return await self.get_all_army(user_id)
+
+    async def heal_army(self, user_id: int):
+        await self._conn.execute(
+            "UPDATE army_units SET quantity = max_quantity WHERE user_id = ?", (user_id,)
+        )
+        await self._conn.commit()
+        return await self.get_all_army(user_id)
+
+    async def get_heal_slots(self, user_id: int):
+        cur = await self._conn.execute(
+            "SELECT heal_1_used_at, heal_2_used_at FROM characters WHERE user_id = ?", (user_id,)
+        )
+        return await cur.fetchone()
+
+    async def use_heal_slot(self, user_id: int, slot: int, now: int):
+        col = "heal_1_used_at" if slot == 1 else "heal_2_used_at"
+        await self._conn.execute(f"UPDATE characters SET {col} = ? WHERE user_id = ?", (now, user_id))
+        await self._conn.commit()
 
     async def get_heroes(self, user_id: int):
         cur = await self._conn.execute(
@@ -438,6 +677,10 @@ class Database:
         return await cur.fetchall()
 
     # ---------- group settings ----------
+
+    async def list_groups(self):
+        cur = await self._conn.execute("SELECT chat_id, title FROM group_settings ORDER BY chat_id")
+        return await cur.fetchall()
 
     async def ensure_group(self, chat_id: int, title: str | None):
         await self._conn.execute(

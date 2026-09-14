@@ -142,6 +142,65 @@ async def admin_addcoins(message: Message, command: CommandObject):
     await message.answer(f"✅ {amount} Coins به کاربر {target_id} اضافه شد.")
 
 
+@router.message(Command("addgems"))
+async def admin_addgems(message: Message, command: CommandObject):
+    # Gems are controlled by the Shahanshah. Admin never grants them directly to players.
+    if not _admin_guard(message.from_user.id):
+        return
+    raw = (command.args or "").strip()
+    if not raw.lstrip("-").isdigit():
+        await message.answer("استفاده: /addgems <amount>\nاین دستور فقط موجودی جم شخصی خودت را زیاد می‌کند.")
+        return
+    amount = int(raw)
+    if amount <= 0:
+        await message.answer("❌ مقدار باید مثبت باشد.")
+        return
+    if not await db.get_character(message.from_user.id):
+        await message.answer("❌ اول برای اکانت ادمین شخصیت بساز.")
+        return
+    await db.add_gems(message.from_user.id, amount, "admin_treasury")
+    await db.log_admin_action(message.from_user.id, "addgems_treasury", message.from_user.id, str(amount))
+    c = await db.get_character(message.from_user.id)
+    await message.answer(f"💎 {amount:,} جم به موجودی شخصی شاهنشاه اضافه شد.\nموجودی: {c['gems']:,} 💎")
+
+
+@router.message(Command("givegems"))
+async def admin_givegems(message: Message, command: CommandObject):
+    """Admin personally transfers Gems to a player by replying to their message."""
+    if not _admin_guard(message.from_user.id):
+        return
+    if not message.reply_to_message or not message.reply_to_message.from_user:
+        await message.answer("💎 روی پیام بازیکن ریپلای کن و بنویس: /givegems 100")
+        return
+    raw = (command.args or "").strip()
+    if not raw.isdigit() or int(raw) <= 0:
+        await message.answer("❌ استفاده: /givegems <amount>")
+        return
+    amount = int(raw)
+    receiver_id = message.reply_to_message.from_user.id
+    if receiver_id == message.from_user.id:
+        await message.answer("❌ جم را به خودت انتقال نده.")
+        return
+    if not await db.get_character(receiver_id):
+        await message.answer("❌ این بازیکن هنوز /start را نزده است.")
+        return
+    ok = await db.transfer_gems(message.from_user.id, receiver_id, amount)
+    if not ok:
+        await message.answer("❌ موجودی جم شخصی شاهنشاه کافی نیست.")
+        return
+    c = await db.get_character(receiver_id)
+    await message.answer(f"👑💎 {amount:,} جم به <b>{c['name']}</b> منتقل شد.")
+
+
+@router.message(Command("gemstock"))
+async def admin_gemstock(message: Message):
+    if not _admin_guard(message.from_user.id):
+        return
+    c = await db.get_character(message.from_user.id)
+    stock = int(c["gems"]) if c else 0
+    await message.answer(f"👑 <b>موجودی شخصی جم شاهنشاه</b>\n\n💎 موجودی: <b>{stock:,}</b> جم\n\nبرای دادن جم به بازیکن، روی پیام او ریپلای کن و /givegems <amount> بزن.")
+
+
 @router.message(Command("addxp"))
 async def admin_addxp(message: Message, command: CommandObject):
     if not _admin_guard(message.from_user.id):

@@ -24,6 +24,7 @@ def format_profile(character, heroes_count: int) -> str:
         f"⭐ Level {level}\n"
         f"✨ XP: {xp_in_level}/{xp_needed}\n\n"
         f"💰 Coins: {character['coins']}\n"
+        f"💎 Gems: {character['gems']}\n"
         f"⚔️ Power: {character['power']}\n"
         f"🛡 Defense: {character['defense']}\n\n"
         f"🏆 Wins: {character['wins']}\n"

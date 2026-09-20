@@ -10,7 +10,7 @@ from aiogram.types import Message, CallbackQuery
 from database import db
 from utils.helpers import is_channel_member, validate_name
 from utils.keyboards import (
-    join_channel_kb, gender_kb, territory_kb, city_kb, main_menu_private,
+    join_channel_kb, gender_kb, territory_kb, city_kb, main_menu_private, main_menu_group,
 )
 
 router = Router(name="start")
@@ -72,7 +72,7 @@ async def enter_game(message: Message, state: FSMContext, user_id: int | None = 
         await state.clear()
         await message.answer(
             f"👑 خوش آمدی، {character['name']}!",
-            reply_markup=main_menu_private(),
+            reply_markup=main_menu_group() if message.chat.type in ("group", "supergroup") else main_menu_private(),
         )
         return
 
@@ -129,4 +129,7 @@ async def receive_city(callback: CallbackQuery, state: FSMContext):
         f"🎉 شخصیت {data['name']} از {data['territory']} ساخته شد!\n\n"
         "به شاهنشاهی خوش آمدی."
     )
-    await callback.message.answer("منوی اصلی:", reply_markup=main_menu_private())
+    await callback.message.answer(
+        "منوی اصلی:",
+        reply_markup=main_menu_group() if callback.message.chat.type in ("group", "supergroup") else main_menu_private(),
+    )

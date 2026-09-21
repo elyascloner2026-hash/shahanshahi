@@ -85,12 +85,22 @@ async def main():
         return web.Response(text="ok")
 
     async def telegram_webhook(request):
-        if secret and request.headers.get("X-Telegram-Bot-Api-Secret-Token") != secret:
-            return web.Response(status=403, text="forbidden")
-        data = await request.json()
-        update = Update.model_validate(data, context={"bot": bot})
-        await dp.feed_update(bot, update)
-        return web.Response(text="ok")
+        try:
+            if secret and request.headers.get("X-Telegram-Bot-Api-Secret-Token") != secret:
+                return web.Response(status=403, text="forbidden")
+
+            data = await request.json()
+            logger.info("Telegram update received: %s", data.get("update_id"))
+
+            update = Update.model_validate(data, context={"bot": bot})
+            await dp.feed_update(bot, update)
+
+            logger.info("Telegram update processed: %s", data.get("update_id"))
+            return web.Response(text="ok")
+
+        except Exception:
+            logger.exception("WEBHOOK ERROR")
+            return web.Response(status=500, text="internal error")
 
     app = web.Application()
     app.router.add_get("/", health)

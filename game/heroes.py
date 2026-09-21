@@ -37,6 +37,8 @@ RARITY_BONUS = {
     "Mythic": 110,
 }
 
+HERO_MAX_OWNED = 3
+
 RARITY_EMOJI = {
     "Common": "⚪",
     "Rare": "🔵",

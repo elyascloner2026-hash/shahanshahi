@@ -31,19 +31,47 @@ async def seed_quests():
 async def hero_event_scheduler(bot: Bot):
     while True:
         try:
-            active = await db.get_active_hero_event()
-            if not active:
+            now = int(asyncio.get_running_loop().time())
+
+            for group in await db.list_groups():
+                chat_id = group["chat_id"]
+                last_at = int(group["hero_event_last_at"] or 0)
+
+                # A persistent timestamp in DB prevents Render restarts
+                # from resetting the 24-hour schedule.
+                wall_now = int(__import__("time").time())
+                if last_at and wall_now - last_at < HERO_EVENT_INTERVAL:
+                    continue
+
+                active = await db.get_active_hero_event(chat_id)
+                if active:
+                    continue
+
                 hero = spawn_hero()
                 event_id = await db.create_hero_event(
-                    hero["name"], hero["hp"], hero["power"], hero["rarity"]
+                    hero["name"],
+                    hero["hp"],
+                    hero["power"],
+                    hero["rarity"],
+                    chat_id=chat_id,
                 )
-                event = await db.get_active_hero_event()
-                logger.info("Spawned hero event: %s (%s)", hero["name"], hero["rarity"])
+                await db.set_group_hero_event_time(chat_id, wall_now)
+
+                event = await db.get_active_hero_event(chat_id)
+                logger.info(
+                    "Spawned hero event for group %s: %s (%s)",
+                    chat_id,
+                    hero["name"],
+                    hero["rarity"],
+                )
+
                 if event:
-                    await heroes.announce_hero_to_groups(bot, event)
+                    await heroes.announce_hero_to_group(bot, event)
+
         except Exception:
             logger.exception("Hero event scheduler failed")
-        await asyncio.sleep(HERO_EVENT_INTERVAL)
+
+        await asyncio.sleep(60)
 
 
 async def main():

@@ -5,3 +5,9 @@ __pycache__/
 .venv/
 venv/
 *.log
+
+# local backup/debug files
+*.bak_heroes
+handlers/start.py.bak
+heroes_debug.txt
+h origin main

@@ -17,7 +17,7 @@ from utils.keyboards import back_kb
 
 router = Router(name="heroes")
 
-ATTACK_COOLDOWN = 60
+ATTACK_COOLDOWN = 10
 _last_attack: dict[tuple[int, int], float] = {}
 ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "heroes"
 
@@ -64,16 +64,6 @@ async def show_hero_menu(callback: CallbackQuery):
         await callback.answer("ابتدا باید /start بزنید.", show_alert=True)
         return
 
-    event = await db.get_active_hero_event()
-    if event:
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        await send_hero_photo(callback.message, event, hero_event_kb(event["id"]))
-        await callback.answer()
-        return
-
     heroes = await db.get_heroes(callback.from_user.id)
     if not heroes:
         await callback.message.edit_text(
@@ -102,7 +92,7 @@ async def show_hero_menu(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("hero_attack:"))
 async def attack_hero(callback: CallbackQuery):
     event_id = int(callback.data.split(":", 1)[1])
-    event = await db.get_active_hero_event()
+    event = await db.get_active_hero_event(callback.message.chat.id)
 
     if not event or event["id"] != event_id or event["status"] != "active":
         await callback.answer("این قهرمان دیگر فعال نیست.", show_alert=True)
@@ -136,7 +126,7 @@ async def attack_hero(callback: CallbackQuery):
         await db.lose_army(callback.from_user.id, retaliation_ratio)
     _last_attack[key] = now
 
-    event = await db.get_active_hero_event()
+    event = await db.get_active_hero_event(callback.message.chat.id)
     loss_pct = retaliation_ratio * 100
     await callback.answer(f"💥 {damage} آسیب زدی! 🩸 قهرمان به ارتشت {loss_pct:.1f}٪ ضربه زد.")
 
@@ -160,7 +150,7 @@ async def finish_hero_event(callback: CallbackQuery, event_id: int):
         return
 
     winner_id = ranking[0]["user_id"]
-    await db.add_hero(
+    added = await db.add_hero(
         winner_id,
         name=event_row["name"] if event_row else "قهرمان",
         rarity=event_row["rarity"] if event_row else "Common",
@@ -180,24 +170,23 @@ async def finish_hero_event(callback: CallbackQuery, event_id: int):
     result = (
         f"🎉 <b>قهرمان شکست خورد!</b>\n\n"
         f"🃏 برنده: <b>{winner_name}</b>\n"
-        f"💰 +{WINNER_COINS} Coins و ✨ +{WINNER_XP} XP\n\n"
+        f"💰 +{WINNER_COINS} Coins و ✨ +{WINNER_XP} XP\n"
+        + ("🃏 کارت قهرمان دریافت شد." if added else "⚠️ ظرفیت ۳ قهرمانت پر بود؛ کارت جدید ذخیره نشد.")
+        + "\n\n"
         f"سایر شرکت‌کنندگان پاداش کوچک‌تری دریافت کردند."
     )
     await callback.message.edit_caption(result, reply_markup=back_kb())
 
 
-async def announce_hero_to_groups(bot: Bot, event):
-    """Announce the active hero only in groups where the bot has been registered."""
-    groups = await db.list_groups()
-    for group in groups:
-        try:
-            await bot.send_photo(
-                chat_id=group["chat_id"],
-                photo=FSInputFile(str(hero_image(event["name"]))),
-                caption=hero_event_text(event),
-                reply_markup=hero_event_kb(event["id"]),
-            )
-        except Exception:
-            # A group may have removed the bot or blocked its messages.
-            # Keep the group record so a later interaction can re-register it.
-            continue
+async def announce_hero_to_group(bot: Bot, event):
+    """Announce one group's own hero event."""
+    chat_id = event["chat_id"]
+    try:
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=FSInputFile(str(hero_image(event["name"]))),
+            caption=hero_event_text(event),
+            reply_markup=hero_event_kb(event["id"]),
+        )
+    except Exception:
+        pass

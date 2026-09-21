@@ -43,5 +43,7 @@ def cooldown_remaining(last_action_ts: int, cooldown_seconds: int) -> int:
 
 
 def hero_bonus_for(heroes_rows) -> int:
-    """Sum of a player's owned Hero Card power bonuses."""
-    return sum(h["bonus"] for h in heroes_rows) if heroes_rows else 0
+    """Hero contribution to battle power. Maximum 3 cards are supported."""
+    if not heroes_rows:
+        return 0
+    return sum(int(h["power"]) + int(h["bonus"]) for h in heroes_rows[:3])
